@@ -1,0 +1,1072 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  LayoutDashboard, Kanban, FileText, 
+  ChevronLeft, ChevronRight, Calculator, Plus, X, CheckCircle, XCircle,
+  Calendar as CalendarIcon, CalendarDays, ClipboardList
+} from 'lucide-react';
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, initializeFirestore, memoryLocalCache } from 'firebase/firestore';
+import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from 'firebase/auth';
+
+// -----------------------------------------------------
+// 파이어베이스 설정 및 초기화 (구글 사이트 iframe 우회 적용)
+// -----------------------------------------------------
+const firebaseConfig = {
+  apiKey: "대표님의_API_KEY",
+  authDomain: "대표님의_AUTH_DOMAIN",
+  projectId: "대표님의_PROJECT_ID",
+  storageBucket: "대표님의_STORAGE_BUCKET",
+  messagingSenderId: "대표님의_MESSAGING_SENDER_ID",
+  appId: "대표님의_APP_ID"
+};
+
+let app;
+let db;
+let auth;
+
+try {
+  if (!getApps().length) {
+    app = initializeApp(firebaseConfig);
+    db = initializeFirestore(app, {
+      localCache: memoryLocalCache()
+    });
+    auth = getAuth(app);
+    
+    setPersistence(auth, inMemoryPersistence)
+      .then(() => signInAnonymously(auth))
+      .catch((err) => {
+        console.warn("Firebase Auth fallback to local mode:", err);
+      });
+  } else {
+    app = getApps()[0];
+    db = getFirestore(app);
+    auth = getAuth(app);
+  }
+} catch (error) {
+  console.warn("Firebase initialization warning (running in standalone mode):", error);
+}
+
+const STORAGE_KEY = 'samwoo_project_tasks_v6';
+
+export default function App() {
+  const [tasks, setTasks] = useState([]);
+  const [activeTab, setActiveTab] = useState('대시보드');
+  const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [isFinanceModalOpen, setIsFinanceModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const [selectedTask, setSelectedTask] = useState(null);
+
+  const tabs = ['대시보드', '프로젝트 관리', '연도별 조회', '일정 달력', '주간 업무 보고', '용역비 관리', '프로젝트 상세'];
+
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        setTasks(JSON.parse(saved));
+      } catch (e) {
+        console.error("데이터 로드 실패:", e);
+      }
+    }
+  }, []);
+
+  const saveTasks = (newTasks) => {
+    setTasks(newTasks);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(newTasks));
+  };
+
+  const openNewTaskModal = () => {
+    setEditingTask(null);
+    setIsTaskModalOpen(true);
+  };
+
+  const handleSaveTask = (taskData) => {
+    let updated;
+    if (editingTask) {
+      updated = tasks.map(t => t.id === editingTask.id ? { ...t, ...taskData } : t);
+    } else {
+      updated = [...tasks, { ...taskData, id: Date.now().toString(), status: '계획검토', isCompleted: false, isDropped: false }];
+    }
+    saveTasks(updated);
+    setIsTaskModalOpen(false);
+    if (selectedTask && selectedTask.id === taskData.id) {
+      setSelectedTask({ ...selectedTask, ...taskData });
+    }
+  };
+
+  const handleSaveFinance = (financeData) => {
+    if (!editingTask) return;
+    const updated = tasks.map(t => t.id === editingTask.id ? { ...t, ...financeData } : t);
+    saveTasks(updated);
+    setIsFinanceModalOpen(false);
+    if (selectedTask && selectedTask.id === editingTask.id) {
+      setSelectedTask({ ...selectedTask, ...financeData });
+    }
+  };
+
+  const handleToggleComplete = (task) => {
+    const updated = tasks.map(t => t.id === task.id ? { ...t, isCompleted: true, isDropped: false, status: '완료됨', completedDate: new Date().toISOString().split('T')[0] } : t);
+    saveTasks(updated);
+    if (selectedTask?.id === task.id) setSelectedTask(updated.find(t => t.id === task.id));
+  };
+
+  const handleToggleDrop = (task) => {
+    const updated = tasks.map(t => t.id === task.id ? { ...t, isDropped: true, isCompleted: false, status: '중단됨', droppedDate: new Date().toISOString().split('T')[0] } : t);
+    saveTasks(updated);
+    if (selectedTask?.id === task.id) setSelectedTask(updated.find(t => t.id === task.id));
+  };
+
+  const handleRestoreTask = (task) => {
+    const updated = tasks.map(t => t.id === task.id ? { ...t, isCompleted: false, isDropped: false, status: '계획검토' } : t);
+    saveTasks(updated);
+    if (selectedTask?.id === task.id) setSelectedTask(updated.find(t => t.id === task.id));
+  };
+
+  const handleDragStart = (e, taskId) => {
+    e.dataTransfer.setData('taskId', taskId);
+  };
+
+  const handleDrop = (e, newStatus) => {
+    e.preventDefault();
+    const taskId = e.dataTransfer.getData('taskId');
+    const updated = tasks.map(t => {
+      if (t.id === taskId) {
+        if (newStatus === '완료됨') return { ...t, status: newStatus, isCompleted: true, isDropped: false };
+        if (newStatus === '중단됨') return { ...t, status: newStatus, isDropped: true, isCompleted: false };
+        return { ...t, status: newStatus, isCompleted: false, isDropped: false };
+      }
+      return t;
+    });
+    saveTasks(updated);
+  };
+
+  const viewDetail = (task) => {
+    setSelectedTask(task);
+    setActiveTab('프로젝트 상세');
+  };
+
+  const renderContent = () => {
+    switch (activeTab) {
+      case '대시보드':
+        return <DashboardView tasks={tasks} onViewDetail={viewDetail} />;
+      case '프로젝트 관리':
+        return <KanbanBoard tasks={tasks} onDragStart={handleDragStart} onDrop={handleDrop} onViewDetail={viewDetail} />;
+      case '연도별 조회':
+        return <YearlyView tasks={tasks} onViewDetail={viewDetail} />;
+      case '일정 달력':
+        return <CalendarView tasks={tasks} onDoubleClickTask={viewDetail} />;
+      case '주간 업무 보고':
+        return <WeeklyReportView tasks={tasks} />;
+      case '용역비 관리':
+        return <ServiceFeeView tasks={tasks} onDoubleClick={viewDetail} openFinanceModal={(t) => { setEditingTask(t); setIsFinanceModalOpen(true); }} />;
+      case '프로젝트 상세':
+        return selectedTask ? (
+          <ProjectDetailView 
+            selectedTask={selectedTask} 
+            openEditModal={() => { setEditingTask(selectedTask); setIsTaskModalOpen(true); }} 
+            handleToggleComplete={handleToggleComplete}
+            handleToggleDrop={handleToggleDrop}
+            handleRestoreTask={handleRestoreTask}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full text-slate-500 font-bold">선택된 프로젝트가 없습니다. 목록에서 프로젝트를 선택해주세요.</div>
+        );
+      default:
+        return <DashboardView tasks={tasks} onViewDetail={viewDetail} />;
+    }
+  };
+
+  return (
+    <div className="flex h-screen bg-slate-50 font-sans text-slate-800">
+      <div className="w-64 bg-slate-900 text-white flex flex-col shadow-xl z-10">
+        <div className="p-6 border-b border-slate-800">
+          <h1 className="text-xl font-black tracking-tight text-white flex items-center">
+            <span className="text-indigo-400 mr-2">SAMOO</span> PM
+          </h1>
+          <p className="text-xs text-slate-400 mt-1">삼우건축사사무소(주)</p>
+        </div>
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+          {tabs.map(tab => (
+            <button
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={`w-full text-left px-4 py-3 rounded-lg text-sm font-semibold transition-all flex items-center ${
+                activeTab === tab ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              {tab === '대시보드' && <LayoutDashboard className="w-4 h-4 mr-3" />}
+              {tab === '프로젝트 관리' && <Kanban className="w-4 h-4 mr-3" />}
+              {tab === '연도별 조회' && <CalendarDays className="w-4 h-4 mr-3" />}
+              {tab === '일정 달력' && <CalendarIcon className="w-4 h-4 mr-3" />}
+              {tab === '주간 업무 보고' && <ClipboardList className="w-4 h-4 mr-3" />}
+              {tab === '용역비 관리' && <Calculator className="w-4 h-4 mr-3" />}
+              {tab === '프로젝트 상세' && <FileText className="w-4 h-4 mr-3" />}
+              {tab}
+            </button>
+          ))}
+        </nav>
+        <div className="p-4 border-t border-slate-800">
+          <button onClick={openNewTaskModal} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 rounded-lg text-sm font-bold shadow-lg transition-colors flex items-center justify-center">
+            <Plus className="w-4 h-4 mr-2" /> 새 프로젝트 등록
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto bg-slate-50/50">
+        <div className="p-8 h-full max-w-7xl mx-auto">
+          {renderContent()}
+        </div>
+      </div>
+
+      {isTaskModalOpen && <TaskModal task={editingTask} onClose={() => setIsTaskModalOpen(false)} onSave={handleSaveTask} />}
+      {isFinanceModalOpen && <FinanceModal task={editingTask} onClose={() => setIsFinanceModalOpen(false)} onSave={handleSaveFinance} />}
+    </div>
+  );
+}
+
+function DashboardView({ tasks, onViewDetail }) {
+  const activeTasks = tasks.filter(t => !t.isCompleted && !t.isDropped);
+  const completedTasks = tasks.filter(t => t.isCompleted);
+  const droppedTasks = tasks.filter(t => t.isDropped);
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-black text-slate-800 mb-6 flex items-center">
+        <LayoutDashboard className="w-6 h-6 mr-3 text-indigo-600" /> 대시보드
+      </h2>
+      
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <StatCard title="전체 프로젝트" value={tasks.length} color="bg-blue-50 text-blue-700 border-blue-200" />
+        <StatCard title="진행 중" value={activeTasks.length} color="bg-indigo-50 text-indigo-700 border-indigo-200" />
+        <StatCard title="완료됨" value={completedTasks.length} color="bg-emerald-50 text-emerald-700 border-emerald-200" />
+        <StatCard title="중단됨" value={droppedTasks.length} color="bg-rose-50 text-rose-700 border-rose-200" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+          <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center"><Kanban className="w-5 h-5 mr-2 text-slate-500" /> 최근 진행 중인 프로젝트</h3>
+          <div className="space-y-3">
+            {activeTasks.slice(0, 5).map(task => (
+              <div key={task.id} onClick={() => onViewDetail(task)} className="p-4 border border-slate-100 rounded-lg hover:bg-slate-50 hover:border-indigo-100 transition-all cursor-pointer flex justify-between items-center group">
+                <div>
+                  <h4 className="font-bold text-slate-800 group-hover:text-indigo-700 transition-colors">{task.title}</h4>
+                  <p className="text-xs text-slate-500 mt-1">{task.client || '발주처 미지정'} | {task.startDate} ~ {task.endDate}</p>
+                </div>
+                <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-bold border border-slate-200">{task.status}</span>
+              </div>
+            ))}
+            {activeTasks.length === 0 && <div className="text-center p-8 text-slate-400 font-medium bg-slate-50 rounded-lg">진행 중인 프로젝트가 없습니다.</div>}
+          </div>
+        </div>
+        <div className="lg:col-span-1">
+          <MiniCalendar tasks={tasks} onViewDetail={onViewDetail} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ title, value, color }) {
+  return (
+    <div className={`p-5 rounded-xl border shadow-sm ${color} flex flex-col justify-center`}>
+      <h3 className="text-sm font-bold opacity-80">{title}</h3>
+      <p className="text-3xl font-black mt-2">{value}</p>
+    </div>
+  );
+}
+
+function MiniCalendar({ tasks, onViewDetail }) {
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [tooltip, setTooltip] = useState({ show: false, x: 0, y: 0, data: null });
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const today = new Date();
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDay = new Date(year, month, 1).getDay();
+  const days = Array.from({ length: firstDay }, () => null).concat(Array.from({ length: daysInMonth }, (_, i) => new Date(year, month, i + 1)));
+
+  const formatDate = (d) => d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : '';
+
+  const getEventsForDate = (date) => {
+    if (!date) return [];
+    const dStr = formatDate(date);
+    const events = [];
+    
+    tasks.forEach(t => {
+      if (t.isCompleted || t.isDropped) return;
+      if (t.startDate && t.endDate && t.startDate <= dStr && t.endDate >= dStr) {
+        events.push({ type: 'project', title: t.title, task: t });
+      }
+      if (t.customDates && t.customDates.length > 0) {
+        t.customDates.forEach(cd => {
+          if (cd.date === dStr) events.push({ type: 'custom', title: cd.content, task: t });
+        });
+      }
+    });
+    return events;
+  };
+
+  const handleDayClick = (e, date) => {
+    const events = getEventsForDate(date);
+    if (events.length > 0) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setTooltip({
+        show: true,
+        x: rect.left + window.scrollX + (rect.width / 2),
+        y: rect.top + window.scrollY - 10,
+        data: { date: formatDate(date), events }
+      });
+    } else {
+      setTooltip({ show: false, x: 0, y: 0, data: null });
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 h-full relative min-h-[320px]">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-base font-bold text-slate-800">{year}년 {month + 1}월</h3>
+        <div className="flex gap-1">
+          <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-1 hover:bg-slate-100 rounded text-slate-500"><ChevronLeft className="w-4 h-4" /></button>
+          <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-1 hover:bg-slate-100 rounded text-slate-500"><ChevronRight className="w-4 h-4" /></button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center">
+        {['일', '월', '화', '수', '목', '금', '토'].map(d => (
+          <div key={d} className="text-xs font-bold text-slate-400 py-1">{d}</div>
+        ))}
+        {days.map((date, idx) => {
+          const isToday = date && date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear();
+          const events = getEventsForDate(date);
+          const hasEvents = events.length > 0;
+          return (
+            <div key={idx} onClick={(e) => handleDayClick(e, date)} className={`aspect-square flex flex-col items-center justify-center rounded-lg text-sm relative cursor-pointer transition-all ${
+              !date ? '' : isToday ? 'bg-indigo-600 text-white font-bold shadow-md' : 'hover:bg-slate-100 text-slate-700 font-medium'
+            }`}>
+              {date && date.getDate()}
+              {hasEvents && !isToday && <div className="absolute bottom-1 w-1.5 h-1.5 bg-purple-500 rounded-full"></div>}
+              {hasEvents && isToday && <div className="absolute bottom-1 w-1.5 h-1.5 bg-white rounded-full"></div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {tooltip.show && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setTooltip({ show: false, x: 0, y: 0, data: null })}></div>
+          <div className="absolute z-50 bg-slate-800 text-white text-xs rounded-lg p-3 shadow-xl w-48 border border-slate-700"
+               style={{ top: tooltip.y, left: tooltip.x, transform: 'translate(-50%, -100%)' }}>
+            <div className="font-bold border-b border-slate-600 pb-2 mb-2">{tooltip.data.date} 일정</div>
+            <div className="space-y-2">
+              {tooltip.data.events.map((ev, i) => (
+                <div key={i} className="flex items-start gap-2 cursor-pointer hover:text-indigo-300" onClick={() => onViewDetail(ev.task)}>
+                  <span className={`mt-0.5 shrink-0 ${ev.type === 'custom' ? 'text-purple-400' : 'text-blue-400'}`}>
+                    {ev.type === 'custom' ? '🌟' : '📌'}
+                  </span>
+                  <span className="leading-tight">{ev.title}</span>
+                </div>
+              ))}
+            </div>
+            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-slate-800 rotate-45 border-b border-r border-slate-700"></div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function KanbanBoard({ tasks, onDragStart, onDrop, onViewDetail }) {
+  const columns = ['계획검토', '건축설계', '건축인허가', '감리', '해체허가'];
+
+  return (
+    <div className="h-full flex flex-col">
+      <h2 className="text-2xl font-black text-slate-800 mb-6 flex items-center">
+        <Kanban className="w-6 h-6 mr-3 text-indigo-600" /> 프로젝트 칸반 보드
+      </h2>
+      <div className="flex gap-4 overflow-x-auto pb-4 flex-1 items-start custom-scrollbar">
+        {columns.map(status => (
+          <div 
+            key={status} 
+            className="bg-slate-200/50 p-4 rounded-xl min-w-[280px] w-72 flex flex-col shrink-0 border border-slate-200"
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => onDrop(e, status)}
+          >
+            <div className="flex justify-between items-center mb-4 px-1">
+              <h3 className="font-bold text-slate-700">{status}</h3>
+              <span className="bg-slate-300 text-slate-600 text-xs py-0.5 px-2.5 rounded-full font-bold">
+                {tasks.filter(t => t.status === status && !t.isCompleted && !t.isDropped).length}
+              </span>
+            </div>
+            <div className="flex-1 flex flex-col gap-3 min-h-[150px]">
+              {tasks.filter(t => t.status === status && !t.isCompleted && !t.isDropped).map(task => (
+                <div 
+                  key={task.id} 
+                  draggable 
+                  onDragStart={(e) => onDragStart(e, task.id)}
+                  onDoubleClick={() => onViewDetail(task)}
+                  className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 cursor-move hover:shadow-md hover:border-indigo-300 transition-all group"
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <h4 className="font-bold text-slate-800 leading-tight group-hover:text-indigo-700 transition-colors">{task.title}</h4>
+                  </div>
+                  <div className="text-xs text-slate-500 mb-3 font-medium">
+                    마감: {task.endDate || '미정'}
+                  </div>
+                  {task.client && (
+                    <div className="mt-2 text-xs bg-slate-50 inline-block px-2 py-1 rounded text-slate-600 font-semibold border border-slate-100">
+                      {task.client}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function YearlyView({ tasks, onViewDetail }) {
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear().toString());
+  const years = Array.from(new Set(tasks.map(t => t.startDate ? t.startDate.substring(0, 4) : new Date().getFullYear().toString()))).sort().reverse();
+  
+  const yearlyTasks = tasks.filter(t => t.startDate && t.startDate.startsWith(selectedYear));
+
+  return (
+    <div className="h-full flex flex-col">
+      <h2 className="text-2xl font-black text-slate-800 mb-6 flex items-center">
+        <CalendarDays className="w-6 h-6 mr-3 text-indigo-600" /> 연도별 프로젝트 조회
+      </h2>
+      <div className="flex gap-2 mb-6">
+        {years.map(y => (
+          <button key={y} onClick={() => setSelectedYear(y)} className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${selectedYear === y ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}>
+            {y}년
+          </button>
+        ))}
+      </div>
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-1 flex flex-col">
+        <div className="overflow-x-auto h-full custom-scrollbar">
+          <table className="w-full text-left">
+            <thead className="bg-slate-50 sticky top-0">
+              <tr className="text-slate-500 text-sm border-b border-slate-200">
+                <th className="p-4 font-bold">상태</th>
+                <th className="p-4 font-bold">프로젝트명</th>
+                <th className="p-4 font-bold">발주처</th>
+                <th className="p-4 font-bold">기간</th>
+              </tr>
+            </thead>
+            <tbody>
+              {yearlyTasks.map(task => (
+                <tr key={task.id} onClick={() => onViewDetail(task)} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer">
+                  <td className="p-4"><span className={`px-2 py-1 rounded text-xs font-bold ${task.isCompleted ? 'bg-emerald-100 text-emerald-700' : task.isDropped ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>{task.status}</span></td>
+                  <td className="p-4 font-bold text-slate-800">{task.title}</td>
+                  <td className="p-4 text-slate-600">{task.client || '-'}</td>
+                  <td className="p-4 text-slate-600 text-sm">{task.startDate} ~ {task.endDate}</td>
+                </tr>
+              ))}
+              {yearlyTasks.length === 0 && <tr><td colSpan="4" className="p-8 text-center text-slate-400">해당 연도의 프로젝트가 없습니다.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CalendarView({ tasks, onDoubleClickTask }) {
+  const [currentDate, setCurrentDate] = useState(new Date());
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const today = new Date();
+
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const firstDay = new Date(year, month, 1).getDay();
+
+  const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+
+  const days = Array.from({ length: firstDay }, () => null).concat(
+    Array.from({ length: daysInMonth }, (_, i) => new Date(year, month, i + 1))
+  );
+
+  const formatDate = (date) => {
+    if (!date) return '';
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  return (
+    <div className="p-6 bg-white rounded-lg shadow h-full flex flex-col min-h-[800px]">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-bold flex items-center gap-2 text-slate-800">
+          <CalendarIcon className="w-7 h-7 text-indigo-600" />
+          {year}년 {month + 1}월 업무 일정
+        </h2>
+        <div className="flex gap-2">
+          <button onClick={prevMonth} className="p-2 border rounded hover:bg-slate-100 transition-colors">
+            <ChevronLeft className="w-5 h-5 text-slate-600" />
+          </button>
+          <button onClick={nextMonth} className="p-2 border rounded hover:bg-slate-100 transition-colors">
+            <ChevronRight className="w-5 h-5 text-slate-600" />
+          </button>
+        </div>
+      </div>
+      
+      <div className="grid grid-cols-7 gap-px bg-slate-200 border border-slate-200 flex-1 rounded-lg overflow-hidden">
+        {['일', '월', '화', '수', '목', '금', '토'].map((day, idx) => (
+          <div key={day} className={`bg-slate-50 p-3 text-center font-bold ${idx === 0 ? 'text-rose-500' : idx === 6 ? 'text-blue-500' : 'text-slate-700'}`}>
+            {day}
+          </div>
+        ))}
+        
+        {days.map((date, index) => {
+          const dateStr = formatDate(date);
+          const dayTasks = date ? tasks.filter(t => !t.isCompleted && !t.isDropped && t.startDate && t.endDate && t.startDate <= dateStr && t.endDate >= dateStr) : [];
+          const customEvents = date ? tasks.flatMap(t => (t.customDates || []).filter(cd => cd.date === dateStr).map(cd => ({ ...cd, taskTitle: t.title, task: t }))) : [];
+          
+          const isToday = date && date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear();
+
+          return (
+            <div key={index} className={`min-h-[140px] p-2 border-t border-slate-100 flex flex-col ${isToday ? 'bg-indigo-50/30' : 'bg-white'}`}>
+              {date && (
+                <>
+                  <div className={`w-7 h-7 flex items-center justify-center rounded-full text-sm font-semibold mb-2 ${isToday ? 'bg-indigo-600 text-white' : date.getDay() === 0 ? 'text-rose-500' : date.getDay() === 6 ? 'text-blue-500' : 'text-slate-700'}`}>
+                    {date.getDate()}
+                  </div>
+                  <div className="flex flex-col gap-1.5 overflow-y-auto flex-1 custom-scrollbar">
+                    {customEvents.map((ev, i) => (
+                      <div key={`c-${i}`} onDoubleClick={() => onDoubleClickTask(ev.task)} className="text-xs p-1.5 rounded cursor-pointer truncate shadow-sm transition-all hover:scale-[1.02] bg-purple-100 text-purple-800 hover:bg-purple-200 border-l-2 border-purple-500" title={`${ev.taskTitle}: ${ev.content}`}>
+                        🌟 {ev.content}
+                      </div>
+                    ))}
+                    {dayTasks.map(task => (
+                      <div key={task.id} onDoubleClick={() => onDoubleClickTask(task)} className="text-xs p-1.5 rounded cursor-pointer truncate shadow-sm transition-all hover:scale-[1.02] bg-blue-50 text-blue-700 hover:bg-blue-100 border-l-2 border-blue-400" title={`${task.title} (${task.startDate} ~ ${task.endDate})`}>
+                        {task.title}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WeeklyReportView({ tasks }) {
+  const activeTasks = tasks.filter(t => !t.isCompleted && !t.isDropped);
+  return (
+    <div className="h-full flex flex-col">
+      <h2 className="text-2xl font-black text-slate-800 mb-6 flex items-center">
+        <ClipboardList className="w-6 h-6 mr-3 text-indigo-600" /> 주간 업무 보고
+      </h2>
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex-1 overflow-y-auto custom-scrollbar">
+        <h3 className="font-bold text-lg mb-4 border-b pb-2">금주 진행 프로젝트 현황</h3>
+        <div className="space-y-4">
+          {activeTasks.map(task => (
+             <div key={task.id} className="p-4 bg-slate-50 border border-slate-100 rounded-lg">
+               <h4 className="font-bold text-indigo-700 mb-2">■ {task.title} <span className="text-xs font-normal text-slate-500 ml-2 bg-slate-200 px-2 py-0.5 rounded">{task.status}</span></h4>
+               <p className="text-sm text-slate-700 mb-1"><strong>기간:</strong> {task.startDate} ~ {task.endDate}</p>
+               <p className="text-sm text-slate-700"><strong>주요 내용:</strong> {task.customDates?.length > 0 ? task.customDates.map(c => `${c.date}(${c.content})`).join(', ') : '특이사항 없음'}</p>
+             </div>
+          ))}
+          {activeTasks.length === 0 && <p className="text-slate-500">진행 중인 프로젝트가 없습니다.</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ServiceFeeView({ tasks, onDoubleClick, openFinanceModal }) {
+  const [selectedYear, setSelectedYear] = useState('all');
+  const [expandedRows, setExpandedRows] = useState({});
+
+  const years = Array.from(new Set(tasks.map(t => {
+    if (t.createdAt) return t.createdAt.substring(0, 4);
+    return new Date().getFullYear().toString();
+  }))).sort().reverse();
+
+  const filteredTasks = selectedYear === 'all' 
+    ? tasks 
+    : tasks.filter(t => {
+        if (selectedYear === 'all') return true;
+        const matchesCreated = t.createdAt && t.createdAt.substring(0, 4) === selectedYear;
+        const matchesInstallments = t.installments && t.installments.some(inst => inst.date && inst.date.substring(0, 4) === selectedYear);
+        const matchesOutsourcing = t.outsourcingCosts && t.outsourcingCosts.some(os => os.date && os.date.substring(0, 4) === selectedYear);
+        return matchesCreated || matchesInstallments || matchesOutsourcing;
+      });
+
+  const sortedTasks = [...filteredTasks].sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+  // 연도별/전체 통계 계산
+  const summary = sortedTasks.reduce((acc, task) => {
+    acc.total += Number(task.totalFee) || 0;
+    
+    if (selectedYear === 'all') {
+      acc.received += Number(task.receivedFee) || 0;
+      acc.outsourcing += (task.outsourcingCosts || []).reduce((s, o) => s + (Number(o.amount) || 0), 0);
+    } else {
+      const yearReceived = (task.installments || []).reduce((subAcc, inst) => {
+        if (inst.date && inst.date.substring(0, 4) === selectedYear) {
+          return subAcc + (Number(inst.amount) || 0);
+        }
+        return subAcc;
+      }, 0);
+      acc.received += yearReceived;
+
+      const yearOutsourcing = (task.outsourcingCosts || []).reduce((subAcc, os) => {
+        if (os.date && os.date.substring(0, 4) === selectedYear) {
+          return subAcc + (Number(os.amount) || 0);
+        }
+        return subAcc;
+      }, 0);
+      acc.outsourcing += yearOutsourcing;
+    }
+    return acc;
+  }, { total: 0, received: 0, outsourcing: 0 });
+
+  const toggleRow = (e, id) => {
+    e.stopPropagation();
+    setExpandedRows(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <h2 className="text-2xl font-black text-slate-800 mb-6 flex items-center">
+        <Calculator className="w-6 h-6 mr-3 text-indigo-600" /> 용역비 및 외주비 관리
+      </h2>
+
+      <div className="flex gap-2 mb-6 overflow-x-auto pb-2 custom-scrollbar">
+        <button onClick={() => setSelectedYear('all')} className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${selectedYear === 'all' ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}>
+          전체 보기
+        </button>
+        {years.map(y => (
+          <button key={y} onClick={() => setSelectedYear(y)} className={`px-4 py-2 rounded-full text-sm font-bold border transition-colors ${selectedYear === y ? 'bg-indigo-600 text-white border-indigo-600 shadow-md' : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'}`}>
+            {y}년
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+        <StatCard title="총 계약 금액" value={`${summary.total.toLocaleString()} 원`} color="bg-blue-50 text-blue-700 border-blue-200" />
+        <StatCard title={selectedYear === 'all' ? '총 기성 수금액' : `${selectedYear}년 기성 수금액`} value={`${summary.received.toLocaleString()} 원`} color="bg-emerald-50 text-emerald-700 border-emerald-200" />
+        <StatCard title={selectedYear === 'all' ? '총 외주비 지출' : `${selectedYear}년 외주비 지출`} value={`${summary.outsourcing.toLocaleString()} 원`} color="bg-purple-50 text-purple-700 border-purple-200" />
+        <StatCard title="총 잔금 (미수금)" value={`${(summary.total - summary.received).toLocaleString()} 원`} color="bg-rose-50 text-rose-700 border-rose-200" />
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-1 flex flex-col">
+        <div className="p-4 border-b border-slate-100 bg-slate-50 font-bold text-slate-700">
+          프로젝트별 용역비 및 외주비 내역 {selectedYear !== 'all' && `(${selectedYear}년 기준)`}
+        </div>
+        <div className="overflow-x-auto flex-1 custom-scrollbar">
+          <table className="w-full text-left">
+            <thead className="sticky top-0 bg-slate-50 z-10">
+              <tr className="text-slate-500 text-sm border-b border-slate-200">
+                <th className="p-4 font-bold whitespace-nowrap">프로젝트명</th>
+                <th className="p-4 font-bold whitespace-nowrap text-right">총 계약 금액</th>
+                <th className="p-4 font-bold whitespace-nowrap text-right">기성 수금액</th>
+                <th className="p-4 font-bold whitespace-nowrap text-right">외주비 지출</th>
+                <th className="p-4 font-bold whitespace-nowrap text-right">잔금</th>
+                <th className="p-4 font-bold whitespace-nowrap text-center">관리</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedTasks.map(task => {
+                const tFee = Number(task.totalFee) || 0;
+                const rFee = selectedYear === 'all' 
+                  ? (Number(task.receivedFee) || 0)
+                  : (task.installments || []).reduce((s, i) => (i.date && i.date.startsWith(selectedYear) ? s + (Number(i.amount) || 0) : s), 0);
+                const oCost = selectedYear === 'all'
+                  ? (task.outsourcingCosts || []).reduce((s, o) => s + (Number(o.amount) || 0), 0)
+                  : (task.outsourcingCosts || []).reduce((s, o) => (o.date && o.date.startsWith(selectedYear) ? s + (Number(o.amount) || 0) : s), 0);
+                const balance = tFee - rFee;
+                const isExpanded = expandedRows[task.id];
+                const hasDetails = (task.installments && task.installments.length > 0) || (task.outsourcingCosts && task.outsourcingCosts.length > 0);
+
+                return (
+                  <React.Fragment key={task.id}>
+                    <tr onClick={() => onDoubleClick(task)} className={`border-b border-slate-100 hover:bg-slate-50 cursor-pointer ${isExpanded ? 'bg-slate-50' : ''}`}>
+                      <td className="p-4 font-bold text-slate-800">{task.title}</td>
+                      <td className="p-4 text-right font-semibold text-slate-700">{tFee.toLocaleString()}</td>
+                      <td className="p-4 text-right font-semibold text-emerald-600">{rFee.toLocaleString()}</td>
+                      <td className="p-4 text-right font-semibold text-purple-600">{oCost.toLocaleString()}</td>
+                      <td className="p-4 text-right font-bold text-rose-600 flex items-center justify-end gap-2">
+                        {balance.toLocaleString()}
+                        {hasDetails && (
+                          <button onClick={(e) => toggleRow(e, task.id)} className="p-1 hover:bg-slate-200 rounded">
+                            {isExpanded ? <ChevronLeft className="w-4 h-4 rotate-90" /> : <ChevronRight className="w-4 h-4" />}
+                          </button>
+                        )}
+                      </td>
+                      <td className="p-4 text-center">
+                        <button onClick={(e) => { e.stopPropagation(); openFinanceModal(task); }} className="px-3 py-1 bg-white border border-slate-300 rounded text-xs font-bold hover:bg-slate-100 shadow-sm">금액 수정</button>
+                      </td>
+                    </tr>
+                    {isExpanded && hasDetails && (
+                      <tr className="bg-slate-50/50 border-b border-slate-200">
+                        <td colSpan="6" className="p-4 pl-8">
+                          <div className="flex flex-wrap gap-4">
+                            {task.installments?.length > 0 && (
+                              <div className="bg-white p-4 rounded border border-emerald-100 flex-1 min-w-[250px] shadow-sm">
+                                <h4 className="text-xs font-bold text-emerald-800 mb-2 border-b border-emerald-100 pb-2">기성금 입금 내역</h4>
+                                {task.installments.map((inst, i) => (
+                                  <div key={i} className="flex justify-between text-sm py-1">
+                                    <span className="text-slate-600">{inst.date}</span>
+                                    <span className="font-bold text-emerald-700">{Number(inst.amount).toLocaleString()} 원</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {task.outsourcingCosts?.length > 0 && (
+                              <div className="bg-white p-4 rounded border border-purple-100 flex-1 min-w-[250px] shadow-sm">
+                                <h4 className="text-xs font-bold text-purple-800 mb-2 border-b border-purple-100 pb-2">외주비 지출 내역</h4>
+                                {task.outsourcingCosts.map((os, i) => (
+                                  <div key={i} className="flex justify-between text-sm py-1">
+                                    <span className="text-slate-600">{os.date} ({os.name})</span>
+                                    <span className="font-bold text-purple-700">{Number(os.amount).toLocaleString()} 원</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              {sortedTasks.length === 0 && <tr><td colSpan="6" className="p-8 text-center text-slate-400">데이터가 없습니다.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectDetailView({ selectedTask, openEditModal, handleToggleComplete, handleToggleDrop, handleRestoreTask }) {
+  if (!selectedTask) return null;
+
+  const totalOsCost = (selectedTask.outsourcingCosts || []).reduce((s, o) => s + (Number(o.amount) || 0), 0);
+
+  return (
+    <div className="bg-white rounded-xl shadow-lg border border-slate-200 h-full flex flex-col overflow-hidden">
+      <div className="bg-slate-900 p-8 text-white relative">
+        <div className="flex justify-between items-start">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+                selectedTask.isCompleted ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 
+                selectedTask.isDropped ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' : 
+                'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30'
+              }`}>
+                {selectedTask.status}
+              </span>
+            </div>
+            <h2 className="text-3xl font-black tracking-tight">{selectedTask.title}</h2>
+            <p className="text-slate-400 mt-2">
+              기간: {selectedTask.startDate || '미정'} ~ {selectedTask.endDate || '미정'}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            {!selectedTask.isCompleted && !selectedTask.isDropped && (
+              <>
+                <button onClick={() => handleToggleComplete(selectedTask)} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded font-bold text-sm transition shadow-sm flex items-center"><CheckCircle className="w-4 h-4 mr-1.5" /> 완료 처리</button>
+                <button onClick={() => handleToggleDrop(selectedTask)} className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded font-bold text-sm transition shadow-sm flex items-center"><XCircle className="w-4 h-4 mr-1.5" /> 중단 처리</button>
+              </>
+            )}
+            {(selectedTask.isCompleted || selectedTask.isDropped) && (
+              <button onClick={() => handleRestoreTask(selectedTask)} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-bold text-sm transition shadow-sm flex items-center">진행 중으로 복구</button>
+            )}
+            <button onClick={openEditModal} className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded font-bold text-sm transition shadow-sm border border-slate-600">기본 정보 수정</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="p-8 flex-1 overflow-y-auto bg-slate-50 flex gap-8">
+        <div className="flex-1 space-y-8">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+            <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2">기본 개요</h3>
+            <div className="grid grid-cols-2 gap-6">
+              <InfoRow label="발주처 (건축주)" value={selectedTask.client} />
+              <InfoRow label="프로젝트 등록일" value={selectedTask.createdAt} />
+              <InfoRow label="대지 위치" value={selectedTask.location} />
+              <InfoRow label="지역 지구" value={selectedTask.zoning} />
+              <InfoRow label="주용도" value={selectedTask.usage} />
+              <InfoRow label="대지 면적" value={selectedTask.siteArea ? `${selectedTask.siteArea} ㎡` : ''} />
+              <InfoRow label="건축 면적" value={selectedTask.buildingArea ? `${selectedTask.buildingArea} ㎡` : ''} />
+              <InfoRow label="연면적" value={selectedTask.totalFloorArea ? `${selectedTask.totalFloorArea} ㎡` : ''} />
+              <InfoRow label="규모" value={selectedTask.scale} />
+            </div>
+          </div>
+          {selectedTask.customDates?.length > 0 && (
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+               <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2 flex items-center">주요 일정 (지정 날짜)</h3>
+               <div className="space-y-3">
+                 {selectedTask.customDates.map((cd, i) => (
+                   <div key={i} className="flex gap-4 p-3 bg-purple-50 rounded-lg border border-purple-100">
+                     <span className="font-bold text-purple-700 w-24 shrink-0">{cd.date}</span>
+                     <span className="text-slate-700">{cd.content}</span>
+                   </div>
+                 ))}
+               </div>
+            </div>
+          )}
+        </div>
+
+        <div className="w-96 shrink-0 space-y-6">
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+             <h3 className="text-lg font-bold text-slate-800 mb-4 border-b pb-2 flex items-center">
+              <Calculator className="w-5 h-5 mr-2 text-indigo-600" /> 용역비 및 외주비 현황
+            </h3>
+            <div className="space-y-4">
+              <InfoRow label="총 계약 금액" value={selectedTask.totalFee ? `${Number(selectedTask.totalFee).toLocaleString()} 원` : '-'} />
+              <div className="pt-2 border-t border-slate-100">
+                <InfoRow label="기성 수금액" value={selectedTask.receivedFee ? `${Number(selectedTask.receivedFee).toLocaleString()} 원` : '-'} />
+                {selectedTask.installments?.length > 0 && (
+                  <div className="mt-2 pl-4 border-l-2 border-emerald-200 space-y-1">
+                    {selectedTask.installments.map((inst, i) => (
+                      <div key={i} className="flex justify-between text-xs text-slate-600 bg-emerald-50/50 p-1.5 rounded">
+                        <span>{inst.date}</span>
+                        <span className="font-bold text-emerald-700">{Number(inst.amount).toLocaleString()} 원</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="pt-2 border-t border-slate-100">
+                <InfoRow label="외주비 지출" value={`${totalOsCost.toLocaleString()} 원`} />
+                {selectedTask.outsourcingCosts?.length > 0 && (
+                  <div className="mt-2 pl-4 border-l-2 border-purple-200 space-y-1">
+                    {selectedTask.outsourcingCosts.map((os, i) => (
+                      <div key={i} className="flex justify-between text-xs text-slate-600 bg-purple-50/50 p-1.5 rounded">
+                        <span>{os.date} ({os.name})</span>
+                        <span className="font-bold text-purple-700">{Number(os.amount).toLocaleString()} 원</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="pt-4 border-t-2 border-slate-800">
+                <div className="flex justify-between font-black text-rose-600 text-lg">
+                  <span>미수 잔금</span>
+                  <span>{((Number(selectedTask.totalFee) || 0) - (Number(selectedTask.receivedFee) || 0)).toLocaleString()} 원</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <div>
+      <span className="block text-xs font-bold text-slate-400 mb-1">{label}</span>
+      <span className="block font-medium text-slate-800 bg-slate-100/50 p-2 rounded border border-slate-100">{value || '-'}</span>
+    </div>
+  );
+}
+
+function TaskModal({ task, onClose, onSave }) {
+  const [formData, setFormData] = useState(task || {
+    title: '', client: '', createdAt: new Date().toISOString().split('T')[0], startDate: '', endDate: '',
+    location: '', zoning: '', usage: '', siteArea: '', buildingArea: '', totalFloorArea: '', scale: '',
+    customDates: []
+  });
+
+  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+  
+  const handleAddCustomDate = () => {
+    setFormData({ ...formData, customDates: [...(formData.customDates || []), { date: '', content: '' }] });
+  };
+  const handleCustomDateChange = (index, field, value) => {
+    const newDates = [...formData.customDates];
+    newDates[index][field] = value;
+    setFormData({ ...formData, customDates: newDates });
+  };
+  const handleRemoveCustomDate = (index) => {
+    setFormData({ ...formData, customDates: formData.customDates.filter((_, i) => i !== index) });
+  };
+
+  const handleSubmit = (e) => { e.preventDefault(); onSave(formData); };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200">
+        <div className="p-5 border-b flex justify-between items-center bg-slate-50">
+          <h2 className="text-xl font-black text-slate-800">{task ? '프로젝트 정보 수정' : '새 프로젝트 등록'}</h2>
+          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full text-slate-500"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
+          <form id="taskForm" onSubmit={handleSubmit} className="space-y-6">
+            <div>
+              <label className="block text-sm font-bold text-slate-700 mb-1">프로젝트명 *</label>
+              <input required type="text" name="title" value={formData.title} onChange={handleChange} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all font-medium text-slate-800" placeholder="예: 강남구 논현동 근생 신축공사" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><label className="block text-sm font-bold text-slate-700 mb-1">발주처 (건축주)</label><input type="text" name="client" value={formData.client} onChange={handleChange} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:border-indigo-500" /></div>
+              <div><label className="block text-sm font-bold text-slate-700 mb-1">등록일</label><input type="date" name="createdAt" value={formData.createdAt} onChange={handleChange} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:border-indigo-500" /></div>
+              <div><label className="block text-sm font-bold text-slate-700 mb-1">착수 예정일</label><input type="date" name="startDate" value={formData.startDate} onChange={handleChange} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:border-indigo-500" /></div>
+              <div><label className="block text-sm font-bold text-slate-700 mb-1">목표 마감일</label><input type="date" name="endDate" value={formData.endDate} onChange={handleChange} className="w-full p-2.5 border border-slate-300 rounded-lg outline-none focus:border-indigo-500" /></div>
+            </div>
+
+            <div className="border-t pt-4">
+              <div className="flex justify-between items-center mb-3">
+                <h4 className="text-sm font-bold text-slate-700">주요 일정 (지정 날짜)</h4>
+                <button type="button" onClick={handleAddCustomDate} className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded hover:bg-indigo-100">+ 날짜 추가</button>
+              </div>
+              <div className="space-y-2">
+                {(formData.customDates || []).map((cd, index) => (
+                  <div key={index} className="flex gap-2 items-center bg-slate-50 p-2 rounded border border-slate-200">
+                    <input type="date" value={cd.date} onChange={(e) => handleCustomDateChange(index, 'date', e.target.value)} className="p-2 border rounded outline-none w-1/3 text-sm" />
+                    <input type="text" value={cd.content} onChange={(e) => handleCustomDateChange(index, 'content', e.target.value)} placeholder="일정 내용 (예: 건축주 미팅)" className="p-2 border rounded outline-none flex-1 text-sm" />
+                    <button type="button" onClick={() => handleRemoveCustomDate(index)} className="p-2 text-rose-500 hover:bg-rose-50 rounded"><X className="w-4 h-4" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="border-t pt-4">
+              <h4 className="text-sm font-bold text-slate-700 mb-3">건축 개요</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">대지 위치</label><input type="text" name="location" value={formData.location} onChange={handleChange} className="w-full p-2 border border-slate-300 rounded outline-none focus:border-indigo-500 text-sm" /></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">지역 지구</label><input type="text" name="zoning" value={formData.zoning} onChange={handleChange} className="w-full p-2 border border-slate-300 rounded outline-none focus:border-indigo-500 text-sm" /></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">주용도</label><input type="text" name="usage" value={formData.usage} onChange={handleChange} className="w-full p-2 border border-slate-300 rounded outline-none focus:border-indigo-500 text-sm" /></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">규모</label><input type="text" name="scale" value={formData.scale} onChange={handleChange} className="w-full p-2 border border-slate-300 rounded outline-none focus:border-indigo-500 text-sm" /></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">대지 면적 (㎡)</label><input type="number" name="siteArea" value={formData.siteArea} onChange={handleChange} className="w-full p-2 border border-slate-300 rounded outline-none focus:border-indigo-500 text-sm" /></div>
+                <div><label className="block text-xs font-bold text-slate-500 mb-1">연면적 (㎡)</label><input type="number" name="totalFloorArea" value={formData.totalFloorArea} onChange={handleChange} className="w-full p-2 border border-slate-300 rounded outline-none focus:border-indigo-500 text-sm" /></div>
+              </div>
+            </div>
+          </form>
+        </div>
+        <div className="p-5 border-t bg-slate-50 flex justify-end gap-3">
+          <button type="button" onClick={onClose} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition">취소</button>
+          <button type="submit" form="taskForm" className="px-5 py-2.5 text-sm font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition shadow-md">저장하기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FinanceModal({ task, onClose, onSave }) {
+  const [formData, setFormData] = useState({
+    totalFee: task?.totalFee || '',
+    installments: task?.installments || [],
+    outsourcingCosts: task?.outsourcingCosts || []
+  });
+
+  const formatNumber = (val) => {
+    if (!val) return '';
+    const num = val.toString().replace(/,/g, '');
+    if (isNaN(num)) return '';
+    return Number(num).toLocaleString();
+  };
+
+  const handleTotalChange = (e) => {
+    const val = e.target.value.replace(/,/g, '');
+    if (!isNaN(val)) setFormData({ ...formData, totalFee: val });
+  };
+
+  const addInst = () => setFormData({ ...formData, installments: [...formData.installments, { date: new Date().toISOString().split('T')[0], amount: '' }] });
+  const updateInst = (idx, field, val) => {
+    const newArr = [...formData.installments];
+    if (field === 'amount') val = val.replace(/,/g, '');
+    newArr[idx][field] = val;
+    setFormData({ ...formData, installments: newArr });
+  };
+  const removeInst = (idx) => setFormData({ ...formData, installments: formData.installments.filter((_, i) => i !== idx) });
+
+  const addOs = () => setFormData({ ...formData, outsourcingCosts: [...formData.outsourcingCosts, { date: new Date().toISOString().split('T')[0], name: '', amount: '' }] });
+  const updateOs = (idx, field, val) => {
+    const newArr = [...formData.outsourcingCosts];
+    if (field === 'amount') val = val.replace(/,/g, '');
+    newArr[idx][field] = val;
+    setFormData({ ...formData, outsourcingCosts: newArr });
+  };
+  const removeOs = (idx) => setFormData({ ...formData, outsourcingCosts: formData.outsourcingCosts.filter((_, i) => i !== idx) });
+
+  const totalRec = formData.installments.reduce((s, item) => s + (Number(item.amount) || 0), 0);
+  const totalOs = formData.outsourcingCosts.reduce((s, item) => s + (Number(item.amount) || 0), 0);
+
+  const handleSubmit = () => {
+    onSave({
+      totalFee: formData.totalFee,
+      installments: formData.installments,
+      outsourcingCosts: formData.outsourcingCosts,
+      receivedFee: totalRec
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200">
+        <div className="p-5 border-b bg-slate-800 text-white flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-black">용역비 및 외주비 금액 수정</h2>
+            <p className="text-xs text-slate-400 mt-1">{task?.title}</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-slate-700 rounded-full text-slate-300"><X className="w-5 h-5" /></button>
+        </div>
+        <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-6 bg-slate-50">
+          
+          <div className="bg-white p-5 rounded-lg border border-slate-200 shadow-sm">
+            <label className="block text-sm font-bold text-slate-700 mb-2">총 계약 금액</label>
+            <div className="flex items-center">
+              <input type="text" value={formatNumber(formData.totalFee)} onChange={handleTotalChange} className="w-full p-3 text-lg font-bold text-right border border-slate-300 rounded outline-none focus:border-indigo-500 text-slate-800" placeholder="0" />
+              <span className="ml-3 font-bold text-slate-500">원</span>
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-lg border border-emerald-100 shadow-sm">
+            <div className="flex justify-between items-center mb-4">
+              <label className="font-bold text-emerald-800">기성 수납 (총 {totalRec.toLocaleString()} 원)</label>
+              <button onClick={addInst} className="text-xs bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded hover:bg-emerald-200 font-bold flex items-center"><Plus className="w-3 h-3 mr-1"/>입금 추가</button>
+            </div>
+            <div className="space-y-2">
+              {formData.installments.map((inst, i) => (
+                <div key={i} className="flex gap-2 bg-emerald-50/50 p-2 rounded border border-emerald-100">
+                  <input type="date" value={inst.date} onChange={(e) => updateInst(i, 'date', e.target.value)} className="w-[40%] p-2 text-sm border rounded outline-none" />
+                  <input type="text" value={formatNumber(inst.amount)} onChange={(e) => updateInst(i, 'amount', e.target.value)} placeholder="금액" className="w-[50%] p-2 text-sm text-right font-bold text-emerald-700 border rounded outline-none" />
+                  <button onClick={() => removeInst(i)} className="w-[10%] text-rose-400 hover:text-rose-600 flex justify-center items-center"><X className="w-4 h-4"/></button>
+                </div>
+              ))}
+              {formData.installments.length === 0 && <div className="text-center text-sm text-slate-400 py-2 border-2 border-dashed border-emerald-100 rounded">기성금 입금 내역이 없습니다.</div>}
+            </div>
+          </div>
+
+          <div className="bg-white p-5 rounded-lg border border-purple-100 shadow-sm">
+            <div className="flex justify-between items-center mb-4">
+              <label className="font-bold text-purple-800">외주비 지출 (총 {totalOs.toLocaleString()} 원)</label>
+              <button onClick={addOs} className="text-xs bg-purple-100 text-purple-700 px-3 py-1.5 rounded hover:bg-purple-200 font-bold flex items-center"><Plus className="w-3 h-3 mr-1"/>외주비 추가</button>
+            </div>
+            <div className="space-y-2">
+              {formData.outsourcingCosts.map((os, i) => (
+                <div key={i} className="flex gap-2 bg-purple-50/50 p-2 rounded border border-purple-100 items-center">
+                  <input type="date" value={os.date} onChange={(e) => updateOs(i, 'date', e.target.value)} className="w-[30%] p-2 text-sm border rounded outline-none" />
+                  <input type="text" value={os.name} onChange={(e) => updateOs(i, 'name', e.target.value)} placeholder="외주명 (업체명)" className="w-[35%] p-2 text-sm border rounded outline-none" />
+                  <input type="text" value={formatNumber(os.amount)} onChange={(e) => updateOs(i, 'amount', e.target.value)} placeholder="금액" className="w-[25%] p-2 text-sm text-right font-bold text-purple-700 border rounded outline-none" />
+                  <button onClick={() => removeOs(i)} className="w-[10%] text-rose-400 hover:text-rose-600 flex justify-center items-center"><X className="w-4 h-4"/></button>
+                </div>
+              ))}
+              {formData.outsourcingCosts.length === 0 && <div className="text-center text-sm text-slate-400 py-2 border-2 border-dashed border-purple-100 rounded">외주비 지출 내역이 없습니다.</div>}
+            </div>
+          </div>
+
+        </div>
+        <div className="p-5 border-t bg-white flex justify-end gap-3">
+          <button onClick={onClose} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition">취소</button>
+          <button onClick={handleSubmit} className="px-5 py-2.5 text-sm font-bold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition shadow-md">저장하기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
